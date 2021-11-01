@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="SocketTemplates-main:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/SocketTemplates_main_jar</output-path>
+    <root id="archive" name="SocketTemplates-main.jar">
+      <element id="module-output" name="SocketTemplates-main" />
+    </root>
+  </artifact>
+</component>
