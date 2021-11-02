@@ -18,11 +18,10 @@ public class E2EEChat {
 
     private Socket clientSocket = null;
     BigInteger mykey;
-    String IV;
+    byte[] ivByte;
 
     BigInteger p = new BigInteger(Integer.toString(primeInteger(10000000)));
     BigInteger q = new BigInteger(Integer.toString(primeInteger(1000)));
-    //    BigInteger q = rand.nextInt(p);
     int a = rand.nextInt(5) + 2;
     BigInteger A = (q.pow(a)).mod(p);
 
@@ -36,8 +35,7 @@ public class E2EEChat {
 
     public E2EEChat() throws IOException {
 
-
-        System.out.println("생성 ! \n" + "p : " + p + "\nq : " + q + "\na : " + a + "\nA : " + A);
+//        System.out.println("생성 ! \n" + "p : " + p + "\nq : " + q + "\na : " + a + "\nA : " + A);
 
         clientSocket = new Socket();
         clientSocket.connect(new InetSocketAddress(hostname, port)); // 서버연결
@@ -86,9 +84,71 @@ public class E2EEChat {
         // 여기부터 3EPROTO 패킷 처리를 개시합니다.
         System.out.println(recvData + "\n==== recv ====");
         String[] parseData = recvData.split("\n");
-        if (parseData[0].contains("KEYXCHG")) {
+        if (parseData[0].split(" ")[1].equals("KEYXCHG")) {
             if (parseData[1].contains("Diffie")) {
+                if (mykey != null) {
+                    String reSend = "3EPROTO KEYXCHGFAIL\nAlgo: Diffie\nFrom: "
+                            + parseData[3].split(":")[1].trim() + "\nTo: "
+                            + parseData[2].split(":")[1].trim()
+                            + "\n\nDuplicated Key Exchange Request";
+                    byte[] payload = reSend.getBytes(StandardCharsets.UTF_8);
+                    clientSocket.getOutputStream().write(payload, 0, payload.length);
+                } else {
+                    String[] args = parseData[parseData.length - 1].split("@");
+                    if (args.length == 3) { // p,q,A 를 받은 상황
+                        // B 계산 후 보냄
+                        p = new BigInteger(args[0]);
+                        q = new BigInteger(args[1]);
+                        A = new BigInteger(args[2]);
+                        int b = rand.nextInt(5) + 2;
+                        System.out.println("\n b : " + b);
+                        BigInteger B = (q.pow(b)).mod(p);
+                        // 내 키 리셋해
+                        String reSend = "";
+                        mykey = (A.pow(b)).mod(p);
+                        System.out.println("Receive p,q,A, mykey is " + mykey);
+                        reSend = "3EPROTO KEYXCHGOK\nAlgo: Diffie\nFrom: "
+                                + parseData[3].split(":")[1].trim() + "\nTo: "
+                                + parseData[2].split(":")[1].trim() + "\n\n" + B;
+                        byte[] payload = reSend.getBytes(StandardCharsets.UTF_8);
+                        clientSocket.getOutputStream().write(payload, 0, payload.length);
 
+                    } else { // B를 받은 상황
+                        // 내 키만 리셋해
+                        BigInteger B = new BigInteger(args[0]);
+                        mykey = (B.pow(a)).mod(p);
+                        System.out.println("Receive B , mykey is " + mykey);
+                    }
+                }
+
+                // 바뀐 key가 중복인 경우 Fail return ..
+
+
+            } else { // AES-256-CBC
+                String args = parseData[parseData.length - 1];
+                Base64.Decoder dec = Base64.getDecoder();
+                if (ivByte != null) {
+                    String reSend = "3EPROTO KEYXCHGFAIL\nFrom: "
+                            + parseData[3].split(":")[1].trim()
+                            + "\n\nDuplicated Key Exchange Request";
+                    byte[] payload = reSend.getBytes(StandardCharsets.UTF_8);
+                    clientSocket.getOutputStream().write(payload, 0, payload.length);
+                } else {
+                    ivByte = dec.decode(args.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        } else if (parseData[0].contains("MSGRECV")) {
+            String cipherText = parseData[5];
+            String paddingResult = mykey.toString();
+            int padding = 32 - paddingResult.length();
+            for (int i = 0; i < padding; i++) {
+                paddingResult += Integer.toString(padding);
+            }
+            String finalKey = paddingResult.substring(0, 32); // 32byte key padding
+            String decryptedText = decryption(finalKey, cipherText);
+            System.out.println(decryptedText);
+        } else if (parseData[0].contains("KEYXCHGRST")) {
+            if (parseData[1].contains("Diffie")) {
                 String[] args = parseData[parseData.length - 1].split("@");
                 if (args.length == 3) { // p,q,A 를 받은 상황
                     // B 계산 후 보내줘야돼
@@ -115,31 +175,24 @@ public class E2EEChat {
                     System.out.println("Receive B , mykey is " + mykey);
                 }
 
-                // 바뀐 key가 중복인 경우 Fail return ..
-
-
             } else { // AES-256-CBC
                 String args = parseData[parseData.length - 1];
-                IV = args;
-                System.out.println("IV is " + IV);
+                Base64.Decoder dec = Base64.getDecoder();
+                ivByte = dec.decode(args.getBytes(StandardCharsets.UTF_8));
+
             }
-        } else if (parseData[0].contains("MSGRECV")) {
-            String cipherText = parseData[5];
-            String paddingResult = mykey.toString();
-            int padding = 32 - paddingResult.length();
-            for (int i = 0; i < padding; i++) {
-                paddingResult += Integer.toString(padding);
-            }
-            String finalKey = paddingResult.substring(0, 32); // 32byte key padding
-            String decryptedText = decryption(finalKey, cipherText);
-            System.out.println("복호화된 메세지는 " + decryptedText);
+        } else if (parseData[0].split(" ")[1].equals("KEYXCHGOK")) {
+            String[] args = parseData[parseData.length - 1].split("@");
+            BigInteger B = new BigInteger(args[0]);
+            mykey = (B.pow(a)).mod(p);
+//            System.out.println("Receive B , mykey is " + mykey);
         }
 
     }
 
     public String decryption(String key, String cipherText) throws NoSuchPaddingException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException, IllegalBlockSizeException, BadPaddingException {
         byte[] keyData = key.getBytes(StandardCharsets.UTF_8);
-        byte[] IVData = IV.getBytes(StandardCharsets.UTF_8);
+        byte[] IVData = ivByte;
         SecretKey secretKey = new SecretKeySpec(keyData, "AES");
         Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
         cipher.init(Cipher.DECRYPT_MODE, secretKey, new IvParameterSpec(IVData));
@@ -203,30 +256,47 @@ class MessageSender implements Runnable {
 
                 }
                 if (message.contains("KEYXCHG") || message.contains("KEYCHGRST")) {
-                    for (int i = 0; i < 4; i++) { // algo , from, to, blank input stream.
+                    for (int i = 0; i < 3; i++) { // algo , from, to, blank input stream.
                         totalMessage += scanner.nextLine().trim() + "\n";
                     }
                     if (totalMessage.contains("Diffie")) {
+                        totalMessage += "\n";
                         totalMessage += clientContext.p + "@" + clientContext.q + "@" + clientContext.A;
                     } else {
+                        totalMessage += scanner.nextLine().trim() + "\n";
                         String iv = scanner.nextLine().trim();
-                        clientContext.IV = iv;
+                        Base64.Decoder dec = Base64.getDecoder();
+                        clientContext.ivByte = dec.decode(iv.getBytes(StandardCharsets.UTF_8));
                         totalMessage += iv;
                     }
                 }
                 if (message.contains("MSGSEND")) {
+                    String nonce = "";
                     for (int i = 0; i < 4; i++) { // from, to, nonce, blank input stream.
-                        totalMessage += scanner.nextLine().trim() + "\n";
+                        if (i == 2) {
+                            nonce = scanner.nextLine().trim();
+                            totalMessage += nonce + "\n";
+                        } else {
+                            totalMessage += scanner.nextLine().trim() + "\n";
+                        }
                     }
                     String plainText = scanner.nextLine().trim();
+                    if (clientContext.mykey == null) {
+                        System.out.println("You have to exchange key first!");
+                        continue;
+                    }
                     String paddingResult = clientContext.mykey.toString();
                     int padding = 32 - paddingResult.length();
                     for (int i = 0; i < padding; i++) {
                         paddingResult += Integer.toString(padding);
                     }
                     String finalKey = paddingResult.substring(0, 32); // 32byte key padding
+                    if (clientContext.ivByte == null) {
+                        System.out.println("You have to exchange IV first!");
+                        continue;
+                    }
                     String enPlainText = encryption(finalKey, plainText); // encrypted plaintext
-                    System.out.println("암호화된 텍스트는 " + enPlainText);
+//                    System.out.println("암호화된 텍스트는 " + enPlainText);
                     totalMessage += enPlainText;
                 }
 
@@ -251,7 +321,7 @@ class MessageSender implements Runnable {
         try {
             Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
             byte[] keyData = key.getBytes(StandardCharsets.UTF_8);
-            byte[] IV = clientContext.IV.getBytes(StandardCharsets.UTF_8); // iv가 null 이면 오류
+            byte[] IV = clientContext.ivByte;
             SecretKey secretKey = new SecretKeySpec(keyData, "AES");
             cipher.init(Cipher.ENCRYPT_MODE, secretKey, new IvParameterSpec(IV));
             byte[] encrypted = cipher.doFinal(plainText.getBytes(StandardCharsets.UTF_8));
